@@ -1,0 +1,10 @@
+{
+  "plugin": {
+    "name": "display_frameinfo",
+    "description": "Display frame information",
+    "version": "0.1",
+    "author": "Doozer",
+    "type": "plugin",
+    "start": "true"
+  }
+}
