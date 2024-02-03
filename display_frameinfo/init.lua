@@ -3,7 +3,7 @@
 
 local exports = {}
 exports.name = "display_frameinfo"
-exports.version = "0.1"
+exports.version = "0.2"
 exports.description = "Display frame information"
 exports.license = "BSD 3-Clause"
 exports.author = { name = "Doozer" }
@@ -16,9 +16,12 @@ local font_width = 6 -- default front width
 local resolution_change_framecounter = 300 -- define how ofter the xrandr resolution is checked
 
 -- global variables
-local screen
-local render
+local screen = nil
+local render = nil
+local input = nil
 local last_percent = 0
+local slowdown_is_active = 0
+local display_xrandr_is_active = 0
 local xrandr 
 local xrandr_init = false
 local last_resolution = ""
@@ -40,7 +43,7 @@ end
 
 function display_frameinfo.startplugin()
 
-	local start_time = 0        -- start time
+	local start_time = 0 -- start time
 
 	local offset_x_text = 10 -- offset the text from the left side of the screen
 	local offset_value = 110 -- offset the value/parameter to indent them 
@@ -54,7 +57,7 @@ function display_frameinfo.startplugin()
 	emu.register_start(function() -- get the screen and rederer at plugin start
 		screen = manager.machine.screens:at(1)
 		render = manager.machine.render.targets:at(1)
-
+		input = manager.machine.input
 	end)
 
 	emu.register_frame_done(function()
@@ -89,16 +92,35 @@ function display_frameinfo.startplugin()
 			end
 
 			-- display a darker box behind the text
-			screen:draw_box(5, 5, screen.width - 5, screen.height - 5, 0x90223344, 0x90223344)
+			if ( slowdown_is_active == 0 ) then
+				screen:draw_box(5, 5, screen.width - 5, screen.height - 5, 0x90223344, 0x90223344)
+			end
 			-- display the plugin information
 			screen:draw_text(offset_x_text, offset_y + pos_y, info)
+
+			-- manage key input when active
+			if input ~= nil then
+				if (input:code_pressed(input:code_from_token("KEYCODE_LEFT"))) then
+					slowdown_is_active=1
+				elseif (input:code_pressed(input:code_from_token("KEYCODE_RIGHT"))) then
+					slowdown_is_active=0
+				end
+				if (input:code_pressed(input:code_from_token("KEYCODE_UP"))) then
+					display_xrandr_is_active=0
+				elseif (input:code_pressed(input:code_from_token("KEYCODE_DOWN"))) then
+					display_xrandr_is_active=1
+				end
+			end
 
 			-- display the speed information
 			pos_y = pos_y + offset_y_paragraph
 			screen:draw_text(offset_x_text, offset_y + pos_y, "Speed:")
 			local video = manager.machine.video
 			local percent = math.floor(manager.machine.video.speed_percent*1000)
-			str = string.format("%.3f %%", manager.machine.video.speed_percent * 100)
+			if ( slowdown_is_active > 0 ) then
+				str = "(slowdown)"
+			end
+			str = string.format("%.3f %% %s", manager.machine.video.speed_percent * 100, str)
 			screen:draw_text(offset_x_value , offset_y + pos_y, str)
 			if ( log_console and percent ~= last_percent ) then
 				print (string.format("%10d: %s", screen:frame_number(), str))
@@ -109,11 +131,6 @@ function display_frameinfo.startplugin()
 			pos_y = pos_y + offset_y_line
 			screen:draw_text(offset_x_text, offset_y + pos_y, "Frame counter:")
 			screen:draw_text(offset_x_value , offset_y + pos_y, string.format("%d (%.3f ms)", screen:frame_number(), usec_elapsed / 1000))
-
-			-- display the current resolution
-			pos_y = pos_y + offset_y_line
-			screen:draw_text(offset_x_text, offset_y + pos_y, "Resolution:")
-			screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%d x %d ", render.width, render.height))
 
 			-- use 8 characters from A to H to represent the frame change, cycle beween them at every new frame (usefull to check latency when using multiple monitors)
 			pos_y = pos_y + offset_y_line
@@ -129,66 +146,78 @@ function display_frameinfo.startplugin()
 			end
 			screen:draw_text(offset_x_value, offset_y + pos_y, str)
 
-			-- display all the input registers for the running game
-			pos_y = pos_y + offset_y_line
-			str = ""
-			screen:draw_text(offset_x_text, offset_y + pos_y, "Inputs:")
-			local idx = 0
-			for tag, port in pairs(manager.machine.ioport.ports) do
-				if ( idx > 0 and idx % 8 == 0 ) then
-					screen:draw_text(offset_x_value, offset_y + pos_y, str)
-					pos_y = pos_y + 10
-					str = ""
+			-- slow down the emulation
+			if ( slowdown_is_active > 0 ) then
+				local duration = os.time() + 1
+			while os.time() < duration do end
+			else
+
+				-- display the current resolution
+				pos_y = pos_y + offset_y_line
+				screen:draw_text(offset_x_text, offset_y + pos_y, "Resolution:")
+				screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%d x %d ", render.width, render.height))
+				-- display all the input registers for the running game
+				pos_y = pos_y + offset_y_line
+				str = ""
+				screen:draw_text(offset_x_text, offset_y + pos_y, "Inputs:")
+				local idx = 0
+				for tag, port in pairs(manager.machine.ioport.ports) do
+					if ( idx > 0 and idx % 8 == 0 ) then
+						screen:draw_text(offset_x_value, offset_y + pos_y, str)
+						pos_y = pos_y + 10
+						str = ""
+					end
+					idx = idx + 1
+					str = string.format("%s%02X ", str, port:read())
 				end
-				idx = idx + 1
-				str = string.format("%s%02X ", str, port:read())
-			end
-			screen:draw_text(offset_x_value, offset_y + pos_y, str)
+				screen:draw_text(offset_x_value, offset_y + pos_y, str)
 
-			-- display the game information
-			pos_y = pos_y + offset_y_paragraph
-			screen:draw_text(offset_x_text, offset_y + pos_y, "________________")
-			screen:draw_text(offset_x_text, offset_y + pos_y - 2, "Game information")
+				-- display the game information
+				pos_y = pos_y + offset_y_paragraph
+				screen:draw_text(offset_x_text, offset_y + pos_y, "________________")
+				screen:draw_text(offset_x_text, offset_y + pos_y - 2, "Game information")
 
-			-- game resolution
-			pos_y = pos_y + offset_y_line
-			screen:draw_text(offset_x_text, offset_y + pos_y, "Resolution:")
-			screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%d x %d ", screen.width, screen.height))
+				-- game resolution
+				pos_y = pos_y + offset_y_line
+				screen:draw_text(offset_x_text, offset_y + pos_y, "Resolution:")
+				screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%d x %d ", screen.width, screen.height))
 
-			-- game horizontal refresh rate
-			pos_y = pos_y + offset_y_line
-			screen:draw_text(offset_x_text, offset_y + pos_y, "Horizontal rate:")
-			screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%.3f kHz", 1/(screen.scan_period * 1000)))
+				-- game horizontal refresh rate
+				pos_y = pos_y + offset_y_line
+				screen:draw_text(offset_x_text, offset_y + pos_y, "Horizontal rate:")
+				screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%.3f kHz", 1/(screen.scan_period * 1000)))
 
-			-- game vertical refresh rate
-			pos_y = pos_y + offset_y_line
-			screen:draw_text(offset_x_text, offset_y + pos_y, "Vertical rate:")
-			screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%.3f Hz", screen.refresh))
+				-- game vertical refresh rate
+				pos_y = pos_y + offset_y_line
+				screen:draw_text(offset_x_text, offset_y + pos_y, "Vertical rate:")
+				screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%.3f Hz", screen.refresh))
 
-			-- game frame time
-			pos_y = pos_y + offset_y_line
-			screen:draw_text(offset_x_text, offset_y + pos_y, "Frame time:")
-			screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%.3f ms", screen.frame_period * 1000))
+				-- game frame time
+				pos_y = pos_y + offset_y_line
+				screen:draw_text(offset_x_text, offset_y + pos_y, "Frame time:")
+				screen:draw_text(offset_x_value, offset_y + pos_y, string.format("%.3f ms", screen.frame_period * 1000))
 
-			-- display the xrandr information (ony available if Xorg is used and /tmp is writable)
-			pos_y = pos_y + offset_y_paragraph
-			screen:draw_text(offset_x_text, offset_y + pos_y, "__________________")
-			screen:draw_text(offset_x_text, offset_y + pos_y - 2, "Xrandr information")
+				if ( display_xrandr_is_active > 0 ) then
+					-- display the xrandr information (ony available if Xorg is used and /tmp is writable)
+					pos_y = pos_y + offset_y_paragraph
+					screen:draw_text(offset_x_text, offset_y + pos_y, "__________________")
+					screen:draw_text(offset_x_text, offset_y + pos_y - 2, "Xrandr information")
 
-			-- capture the current Xorg resolution and check every 300 frames if the resolution have changed
-			if ( (screen:frame_number()%resolution_change_framecounter == 0 or not xrandr_init) and last_resolution ~= string.format("%dx%d@%f", screen.width, screen.height, screen.scan_period)) then
-				xrandr = Exec("DISPLAY=:0 xrandr --verbose > /tmp/xrandr.output; (grep ' connected' /tmp/xrandr.output | sed 's+ \\((0[^)\\]*)\\).*\\| (.*+\\1+' ; grep '*' -A 2 /tmp/xrandr.output | sed 's+) +)\\n+' | sed 's+ total+\\ntotal+' | sed 's+ *\\(.\\{,"..total_col.."\\}\\)+\\1\\n+g' | grep -v '^$')")
-				last_resolution = string.format("%dx%d@%f", screen.width, screen.height, screen.scan_period)
-				xrandr_init = true
-			end
-			-- only display xrandr information if available
-			if ( xrandr_init ) then
-				for p,l in pairs(xrandr) do
-					pos_y = pos_y + offset_y_line
-					screen:draw_text(offset_x_text, offset_y + pos_y, l)
+					-- capture the current Xorg resolution and check every 300 frames if the resolution have changed
+					if ( (screen:frame_number()%resolution_change_framecounter == 0 or not xrandr_init) and last_resolution ~= string.format("%dx%d@%f", screen.width, screen.height, screen.scan_period)) then
+						xrandr = Exec("DISPLAY=:0 xrandr --verbose > /tmp/xrandr.output; (grep ' connected' /tmp/xrandr.output | sed 's+ \\((0[^)\\]*)\\).*\\| (.*+\\1+' ; grep '*' -A 2 /tmp/xrandr.output | sed 's+) +)\\n+' | sed 's+ total+\\ntotal+' | sed 's+ *\\(.\\{,"..total_col.."\\}\\)+\\1\\n+g' | grep -v '^$')")
+						last_resolution = string.format("%dx%d@%f", screen.width, screen.height, screen.scan_period)
+						xrandr_init = true
+					end
+					-- only display xrandr information if available
+					if ( xrandr_init ) then
+						for p,l in pairs(xrandr) do
+							pos_y = pos_y + offset_y_line
+							screen:draw_text(offset_x_text, offset_y + pos_y, l)
+						end
+					end
 				end
 			end
-
 		end
 
 	end)

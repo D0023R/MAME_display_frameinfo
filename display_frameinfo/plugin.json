@@ -2,7 +2,7 @@
   "plugin": {
     "name": "display_frameinfo",
     "description": "Display frame information",
-    "version": "0.1",
+    "version": "0.2",
     "author": "Doozer",
     "type": "plugin",
     "start": "true"
